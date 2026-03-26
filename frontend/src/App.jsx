@@ -1,14 +1,12 @@
-import { Routes, Route, Link } from "react-router-dom";
-import VisitorTracker from "./VisitorTracker";
+import { Routes, Route } from "react-router-dom";
 import Home from "./Home";
+import Dashboard from "./Dashboard";
 
-function App() {
+export default function App() {
   return (
-      <Routes>
-        <Route path="/" element={<Home />} />
-        <Route path="/visitors" element={<VisitorTracker/>} />
-      </Routes>
+    <Routes>
+      <Route path="/" element={<Home />} />
+      <Route path="/dashboard" element={<Dashboard />} />
+    </Routes>
   );
 }
-
-export default App;

@@ -1,7 +1,11 @@
+import { useEffect } from "react";
+import sendVisit, { startHeartbeat } from "./Trackvisit";
+
 export default function Home() {
-    return(
-        <>
-            <h1>This is Home page</h1>
-        </>
-    );
+    useEffect(() => {
+        sendVisit();
+        startHeartbeat();
+    }, []);
+
+    return <h1>Home Page</h1>;
 }
