@@ -1,10 +1,9 @@
 const crypto = require("crypto");
 const sql = require("../../neon_connection");
-const { fetchVpnIntel } = require("./vpnIntelService");
+const { detectVpn } = require("./vpnIntelService");
 
 const DEDUPE_WINDOW_SECONDS = 120;
 const QUERY_LIMIT_DEFAULT = 50;
-const FRAUD_SCORE_THRESHOLD = Number(process.env.VPN_FRAUD_SCORE_THRESHOLD || 75);
 const RANGE_TO_INTERVAL = {
   "1h": "1 hour",
   "24h": "24 hours",
@@ -226,19 +225,15 @@ async function detectSuspicious(visitorId, ipAddress, country, vpnData) {
   }
 
   if (vpnData?.isVpn === true) {
-    reasons.push("vpn-detected");
+    reasons.push("vpn-likely");
   }
 
   if (vpnData?.isProxy === true) {
     reasons.push("proxy-detected");
   }
 
-  if (vpnData?.isTor === true) {
-    reasons.push("tor-detected");
-  }
-
-  if (Number.isFinite(vpnData?.fraudScore) && vpnData.fraudScore > FRAUD_SCORE_THRESHOLD) {
-    reasons.push("high-fraud-score");
+  if (Number.isFinite(vpnData?.confidence) && vpnData.confidence > 70) {
+    reasons.push("high-confidence-vpn");
   }
 
   return {
@@ -269,10 +264,11 @@ function mapTrackingRow(row) {
         row.location_source === "precise" ? "precise" : "approximate"
     },
     vpn: {
-      isVpn: row.is_vpn,
-      isProxy: row.is_proxy,
-      isTor: row.is_tor,
-      fraudScore: row.fraud_score
+      detected: row.vpn_detected ?? row.is_vpn ?? false,
+      confidence: row.vpn_confidence ?? row.fraud_score ?? 0,
+      type: row.vpn_type || null,
+      isp: row.isp || null,
+      isProxy: row.is_proxy ?? false
     },
     suspicious: row.suspicious,
     suspiciousReasons: Array.isArray(row.suspicious_reasons)
@@ -330,7 +326,7 @@ async function trackUser(payload, ipAddress) {
   }
 
   const location = await enrichLocation(effectiveIpAddress, locationInput, preciseLocationAllowed);
-  const vpnData = await fetchVpnIntel(effectiveIpAddress);
+  const vpnData = await detectVpn(effectiveIpAddress);
   const suspiciousResult = await detectSuspicious(
     visitorId,
     effectiveIpAddress,
@@ -351,10 +347,11 @@ async function trackUser(payload, ipAddress) {
     city: location.city,
     country: location.country,
     ipAddress: effectiveIpAddress,
-    isVpn: vpnData.isVpn,
+    vpnDetected: vpnData.isVpn,
+    vpnConfidence: vpnData.confidence,
+    vpnType: vpnData.vpnType,
+    isp: vpnData.isp,
     isProxy: vpnData.isProxy,
-    isTor: vpnData.isTor,
-    fraudScore: vpnData.fraudScore,
     locationType: location.locationType,
     preciseLocationAllowed,
     uid: normalizedUid,
@@ -377,10 +374,10 @@ async function trackUser(payload, ipAddress) {
       city,
       country,
       ip_address,
-      is_vpn,
-      is_proxy,
-      is_tor,
-      fraud_score,
+      vpn_detected,
+      vpn_confidence,
+      vpn_type,
+      isp,
       location_source,
       precise_location_allowed,
       suspicious,
@@ -401,9 +398,9 @@ async function trackUser(payload, ipAddress) {
       ${location.country},
       ${effectiveIpAddress},
       ${vpnData.isVpn},
-      ${vpnData.isProxy},
-      ${vpnData.isTor},
-      ${vpnData.fraudScore},
+      ${vpnData.confidence},
+      ${vpnData.vpnType},
+      ${vpnData.isp},
       ${location.locationType},
       ${preciseLocationAllowed},
       ${suspiciousResult.suspicious},
@@ -412,7 +409,8 @@ async function trackUser(payload, ipAddress) {
         consentShown: true,
         locationCaptureMethod: location.locationType,
         uid: normalizedUid,
-        vpnSource: vpnData.source || null
+        vpnSource: vpnData.sources || null,
+        vpnType: vpnData.vpnType || null
       })}
     )
     RETURNING *

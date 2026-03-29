@@ -26,12 +26,11 @@ function toSafeLower(value) {
 }
 
 function isRiskyTrackingRow(row) {
-  const fraudScore = Number(row?.vpn?.fraudScore);
+  const confidence = Number(row?.vpn?.confidence);
   return (
-    row?.vpn?.isVpn === true ||
+    row?.vpn?.detected === true ||
     row?.vpn?.isProxy === true ||
-    row?.vpn?.isTor === true ||
-    (Number.isFinite(fraudScore) && fraudScore > 75) ||
+    (Number.isFinite(confidence) && confidence > 70) ||
     row?.suspicious === true
   );
 }
@@ -163,10 +162,11 @@ export default function App() {
         toSafeLower(row.location?.city).includes(query) ||
         toSafeLower(row.location?.country).includes(query) ||
         toSafeLower(row.device?.osPlatform).includes(query) ||
-        toSafeLower(row.vpn?.isVpn).includes(query) ||
+        toSafeLower(row.vpn?.detected).includes(query) ||
         toSafeLower(row.vpn?.isProxy).includes(query) ||
-        toSafeLower(row.vpn?.isTor).includes(query) ||
-        toSafeLower(row.vpn?.fraudScore).includes(query)
+        toSafeLower(row.vpn?.confidence).includes(query) ||
+        toSafeLower(row.vpn?.type).includes(query) ||
+        toSafeLower(row.vpn?.isp).includes(query)
       );
     });
   }, [uniqueTrackingRows, trackingQuery]);
@@ -270,10 +270,11 @@ export default function App() {
           <div><span>Current Visitor</span><strong className="mono">{trackingCurrent?.visitorId || "N/A"}</strong></div>
           <div><span>Current IP</span><strong className="mono">{trackingCurrent?.location?.ipAddress || "N/A"}</strong></div>
           <div><span>Location Type</span><strong>{trackingCurrent?.location?.locationType === "precise" ? "Precise" : "Approximate"}</strong></div>
-          <div><span>VPN</span><strong>{trackingCurrent?.vpn?.isVpn === true ? "Yes" : "No"}</strong></div>
+          <div><span>VPN</span><strong>{trackingCurrent?.vpn?.detected === true ? "Yes" : "No"}</strong></div>
           <div><span>Proxy</span><strong>{trackingCurrent?.vpn?.isProxy === true ? "Yes" : "No"}</strong></div>
-          <div><span>Tor</span><strong>{trackingCurrent?.vpn?.isTor === true ? "Yes" : "No"}</strong></div>
-          <div><span>Fraud Score</span><strong>{trackingCurrent?.vpn?.fraudScore ?? "N/A"}</strong></div>
+          <div><span>Confidence</span><strong>{trackingCurrent?.vpn?.confidence ?? "N/A"}</strong></div>
+          <div><span>VPN Type</span><strong>{trackingCurrent?.vpn?.type || "N/A"}</strong></div>
+          <div><span>ISP</span><strong>{trackingCurrent?.vpn?.isp || "N/A"}</strong></div>
         </div>
       </section>
 
@@ -391,7 +392,7 @@ export default function App() {
           <table>
             <thead>
               <tr>
-                <th>Visitor ID</th><th>City</th><th>Country</th><th>Coordinates</th><th>IP</th><th>Location Type</th><th>VPN</th><th>Proxy</th><th>Tor</th><th>Fraud Score</th><th>Device</th><th>Suspicious</th><th>Reasons</th><th>Last Seen</th>
+                <th>Visitor ID</th><th>City</th><th>Country</th><th>Coordinates</th><th>IP</th><th>Location Type</th><th>VPN</th><th>Confidence</th><th>VPN Type</th><th>ISP</th><th>Device</th><th>Suspicious</th><th>Reasons</th><th>Last Seen</th>
               </tr>
             </thead>
             <tbody>
@@ -403,10 +404,10 @@ export default function App() {
                   <td>{row.location.latitude ?? "N/A"}, {row.location.longitude ?? "N/A"}</td>
                   <td className="mono">{row.location.ipAddress}</td>
                   <td>{row.location.locationType === "precise" ? "Precise Location" : "Approximate Location (via IP)"}</td>
-                  <td>{row.vpn?.isVpn === true ? "Yes" : "No"}</td>
-                  <td>{row.vpn?.isProxy === true ? "Yes" : "No"}</td>
-                  <td>{row.vpn?.isTor === true ? "Yes" : "No"}</td>
-                  <td>{row.vpn?.fraudScore ?? "N/A"}</td>
+                  <td>{row.vpn?.detected === true ? "Yes" : "No"}</td>
+                  <td>{row.vpn?.confidence ?? "N/A"}</td>
+                  <td>{row.vpn?.type || "N/A"}</td>
+                  <td>{row.vpn?.isp || "N/A"}</td>
                   <td>{row.device.osPlatform}</td>
                   <td>{row.suspicious ? "Yes" : "No"}</td>
                   <td>{row.suspiciousReasons?.join(", ") || "-"}</td>

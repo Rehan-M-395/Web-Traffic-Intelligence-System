@@ -132,15 +132,58 @@ function getPreciseLocation() {
 }
 
 async function getIpBasedLocation() {
-  try {
-    const response = await fetch("https://ipwho.is/");
+  async function fetchJson(url) {
+    const response = await fetch(url);
     if (!response.ok) {
       return null;
     }
+    return response.json();
+  }
 
-    const body = await response.json();
+  async function resolvePublicIpFallback() {
+    const providers = [
+      async () => {
+        const body = await fetchJson("https://api64.ipify.org?format=json");
+        return normalizeString(body?.ip);
+      },
+      async () => {
+        const body = await fetchJson("https://api.ipify.org?format=json");
+        return normalizeString(body?.ip);
+      },
+      async () => {
+        const body = await fetchJson("https://ifconfig.me/all.json");
+        return normalizeString(body?.ip_addr);
+      }
+    ];
+
+    for (const provider of providers) {
+      try {
+        const ip = await provider();
+        if (ip) {
+          return ip;
+        }
+      } catch {
+        // try next provider
+      }
+    }
+
+    return null;
+  }
+
+  try {
+    const body = await fetchJson("https://ipwho.is/");
     if (!body || body.success === false) {
-      return null;
+      const fallbackIp = await resolvePublicIpFallback();
+      return fallbackIp
+        ? {
+            latitude: null,
+            longitude: null,
+            city: null,
+            country: null,
+            ipAddress: fallbackIp,
+            locationType: "approximate"
+          }
+        : null;
     }
 
     return {
@@ -152,7 +195,17 @@ async function getIpBasedLocation() {
       locationType: "approximate"
     };
   } catch {
-    return null;
+    const fallbackIp = await resolvePublicIpFallback();
+    return fallbackIp
+      ? {
+          latitude: null,
+          longitude: null,
+          city: null,
+          country: null,
+          ipAddress: fallbackIp,
+          locationType: "approximate"
+        }
+      : null;
   }
 }
 
