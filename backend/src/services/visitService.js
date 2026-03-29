@@ -10,6 +10,10 @@ function buildFingerprint(body = {}) {
   return `${body.browser}-${body.os}-${body.gpu}-${body.ram}-${body.cpuThreads}`;
 }
 
+function getFingerprintHash(body = {}) {
+  return fingerprintHash(buildFingerprint(body));
+}
+
 async function ensureUser(req, res) {
   let uid = req.cookies.uid;
   let isNewUser = false;
@@ -25,16 +29,16 @@ async function ensureUser(req, res) {
     });
   }
 
-  const fpHash = fingerprintHash(buildFingerprint(req.body));
-  const existingUser = await sql`
-    SELECT uid FROM users WHERE uid = ${uid}
+  const fpHash = getFingerprintHash(req.body);
+  const inserted = await sql`
+    INSERT INTO users (uid, fingerprint_hash, visit_count, last_seen)
+    VALUES (${uid}, ${fpHash}, 1, CURRENT_TIMESTAMP)
+    ON CONFLICT (uid) DO NOTHING
+    RETURNING uid
   `;
 
-  if (existingUser.length === 0) {
-    await sql`
-      INSERT INTO users (uid, fingerprint_hash)
-      VALUES (${uid}, ${fpHash})
-    `;
+  if (inserted.length > 0) {
+    isNewUser = true;
   } else {
     await sql`
       UPDATE users
@@ -90,6 +94,7 @@ async function ensureSession(req, res, uid) {
 async function trackVisit(req, res) {
   const { uid, isNewUser } = await ensureUser(req, res);
   const sessionId = await ensureSession(req, res, uid);
+  const fingerprintHashValue = getFingerprintHash(req.body);
 
   await sql`
     INSERT INTO visits (uid, session_id, path)
@@ -99,7 +104,8 @@ async function trackVisit(req, res) {
   return {
     newUser: isNewUser,
     uid,
-    sessionId
+    sessionId,
+    fingerprintHash: fingerprintHashValue
   };
 }
 
@@ -167,9 +173,64 @@ async function getStats() {
   };
 }
 
+async function getAdminUsers(monitorUsers = []) {
+  const rows = await sql`
+    SELECT
+      u.uid,
+      u.visit_count,
+      u.last_seen,
+      s.session_id,
+      s.ip,
+      s.device,
+      s.start_time,
+      s.last_activity,
+      (
+        SELECT COUNT(*)
+        FROM visits v
+        WHERE v.uid = u.uid
+      ) AS total_visits
+    FROM users u
+    LEFT JOIN LATERAL (
+      SELECT session_id, ip, device, start_time, last_activity
+      FROM sessions
+      WHERE uid = u.uid
+      ORDER BY last_activity DESC
+      LIMIT 1
+    ) s ON true
+    ORDER BY COALESCE(s.last_activity, u.last_seen) DESC NULLS LAST
+    LIMIT 100
+  `;
+
+  const monitorMap = new Map(monitorUsers.map((user) => [user.uid, user]));
+
+  return rows.map((row) => {
+    const monitor = monitorMap.get(row.uid) || {};
+
+    return {
+      uid: row.uid,
+      ip: row.ip || monitor.ip || "unknown",
+      device: row.device || "unknown",
+      visitCount: Number(row.visit_count || 0),
+      totalVisits: Number(row.total_visits || 0),
+      queueStatus: monitor.queueStatus || "idle",
+      queuePosition: monitor.queuePosition || 0,
+      blockedRequests: monitor.blockedRequests || 0,
+      requestCount: monitor.requestCount || 0,
+      anomalyCount: monitor.anomalyCount || 0,
+      lastSeen: row.last_seen,
+      lastActivity: row.last_activity,
+      sessionId: row.session_id,
+      startTime: row.start_time,
+      active: Boolean(row.last_activity)
+    };
+  });
+}
+
 module.exports = {
   trackVisit,
   updateHeartbeat,
   getOnlineUsersCount,
-  getStats
+  getStats,
+  getAdminUsers,
+  getFingerprintHash
 };

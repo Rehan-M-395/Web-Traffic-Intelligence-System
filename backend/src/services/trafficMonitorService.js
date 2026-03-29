@@ -6,6 +6,12 @@ const BATCH_SIZE = 5;
 const PROCESSING_INTERVAL_MS = 1_000;
 const COMPLETION_RETENTION_MS = 120_000;
 const HISTORY_LIMIT = 20;
+const {
+  createQueueEntry,
+  logAnomaly,
+  safePersist,
+  updateQueueEntry
+} = require("./trafficPersistenceService");
 
 const state = {
   requestTimestampsByIp: new Map(),
@@ -13,6 +19,7 @@ const state = {
   queue: [],
   queueEntries: new Map(),
   anomalies: [],
+  userTraffic: new Map(),
   processingStarted: false,
   totals: {
     totalRequests: 0,
@@ -35,6 +42,51 @@ function addAnomaly(type, details) {
 
   state.anomalies.unshift(anomaly);
   state.anomalies = state.anomalies.slice(0, 50);
+
+  if (details.userId) {
+    const userState = getUserState(details.userId, details.ip);
+    userState.anomalyCount += 1;
+  }
+
+  safePersist("log anomaly", () =>
+    logAnomaly({
+      userId: details.userId || null,
+      ipAddress: details.ip,
+      anomalyType: type,
+      severity: type === "rate-limit-exceeded" ? "high" : "medium",
+      routePath: details.route || null,
+      requestsPerSecond: details.requestsPerSecond || null,
+      details
+    })
+  );
+}
+
+function getUserState(userId, ip = "unknown") {
+  const key = userId || ip;
+  const existing = state.userTraffic.get(key);
+
+  if (existing) {
+    if (ip && existing.ip === "unknown") {
+      existing.ip = ip;
+    }
+    if (userId && !existing.uid) {
+      existing.uid = userId;
+    }
+    return existing;
+  }
+
+  const nextState = {
+    uid: userId || key,
+    ip,
+    requestCount: 0,
+    blockedRequests: 0,
+    anomalyCount: 0,
+    queueStatus: "idle",
+    queuePosition: 0
+  };
+
+  state.userTraffic.set(key, nextState);
+  return nextState;
 }
 
 function touchTimeline(now) {
@@ -58,6 +110,7 @@ function touchTimeline(now) {
 function inspectRequest({ ip, userId, route }) {
   const now = Date.now();
   const key = ip || userId || "unknown";
+  const userState = getUserState(userId, key);
   const requestTimestamps = pruneTimestamps(
     state.requestTimestampsByIp.get(key) || [],
     RATE_LIMIT_WINDOW_MS,
@@ -67,12 +120,14 @@ function inspectRequest({ ip, userId, route }) {
   requestTimestamps.push(now);
   state.requestTimestampsByIp.set(key, requestTimestamps);
   state.totals.totalRequests += 1;
+  userState.requestCount += 1;
   touchTimeline(now);
 
   const burstWindowCount = pruneTimestamps(requestTimestamps, BURST_WINDOW_MS, now).length;
   if (burstWindowCount >= BURST_THRESHOLD) {
     addAnomaly("burst-traffic", {
       ip: key,
+      userId,
       route,
       requestsPerSecond: burstWindowCount
     });
@@ -80,6 +135,7 @@ function inspectRequest({ ip, userId, route }) {
 
   if (requestTimestamps.length > RATE_LIMIT_MAX_REQUESTS) {
     state.totals.blockedRequests += 1;
+    userState.blockedRequests += 1;
     addAnomaly("rate-limit-exceeded", {
       ip: key,
       userId,
@@ -131,11 +187,25 @@ function createQueueResponse(entry) {
   };
 }
 
+function syncQueuePositions() {
+  state.queue.forEach((userId, index) => {
+    const entry = state.queueEntries.get(userId);
+    const userState = getUserState(userId, entry?.ip || "unknown");
+
+    if (entry?.status === "queued") {
+      userState.queueStatus = "queued";
+      userState.queuePosition = index + 1;
+    }
+  });
+}
+
 function joinQueue({ userId, ip, path }) {
   cleanupCompletedEntries();
+  const userState = getUserState(userId, ip);
 
   const existing = state.queueEntries.get(userId);
   if (existing && existing.status !== "completed") {
+    syncQueuePositions();
     return createQueueResponse(existing);
   }
 
@@ -151,8 +221,22 @@ function joinQueue({ userId, ip, path }) {
 
   state.queueEntries.set(userId, entry);
   state.queue.push(userId);
+  userState.queueStatus = "queued";
+  syncQueuePositions();
 
-  return createQueueResponse(entry);
+  const response = createQueueResponse(entry);
+  safePersist("create queue entry", () =>
+    createQueueEntry({
+      userId,
+      ipAddress: ip,
+      routePath: path,
+      status: response.status,
+      queuePosition: response.queuePosition,
+      estimatedWaitSeconds: response.estimatedWaitTimeSeconds
+    })
+  );
+
+  return response;
 }
 
 function markCompleted(entry) {
@@ -160,6 +244,21 @@ function markCompleted(entry) {
   entry.completedAt = new Date().toISOString();
   entry.completedAtMs = Date.now();
   state.totals.completedRequests += 1;
+  const userState = getUserState(entry.userId, entry.ip);
+  userState.queueStatus = "completed";
+  userState.queuePosition = 0;
+  safePersist("complete queue entry", () =>
+    updateQueueEntry({
+      userId: entry.userId,
+      status: "completed",
+      queuePosition: 0,
+      estimatedWaitSeconds: 0,
+      completed: true,
+      metadata: {
+        completedAt: entry.completedAt
+      }
+    })
+  );
 }
 
 function startQueueProcessor() {
@@ -181,11 +280,25 @@ function startQueueProcessor() {
       }
 
       entry.status = "processing";
+      const userState = getUserState(userId, entry.ip);
+      userState.queueStatus = "processing";
+      userState.queuePosition = 0;
+      safePersist("processing queue entry", () =>
+        updateQueueEntry({
+          userId,
+          status: "processing",
+          queuePosition: 0,
+          estimatedWaitSeconds: 0,
+          processingStarted: true
+        })
+      );
 
       setTimeout(() => {
         markCompleted(entry);
       }, 800);
     });
+
+    syncQueuePositions();
   }, PROCESSING_INTERVAL_MS);
 }
 
@@ -202,6 +315,13 @@ function getQueueStatus(userId) {
 
 function getAnomalies() {
   return state.anomalies;
+}
+
+function getUserTrafficDetails() {
+  syncQueuePositions();
+  return Array.from(state.userTraffic.values())
+    .map((user) => ({ ...user }))
+    .sort((left, right) => right.requestCount - left.requestCount);
 }
 
 function getAverageWaitTimeSeconds() {
@@ -249,13 +369,47 @@ async function getClientSnapshot() {
   };
 }
 
+function simulateBurstTraffic({ total, userId, ip, path }) {
+  let allowed = 0;
+  let blocked = 0;
+  let firstResponse = null;
+
+  for (let index = 0; index < total; index += 1) {
+    const decision = inspectRequest({
+      ip,
+      userId,
+      route: path
+    });
+
+    if (!decision.allowed) {
+      blocked += 1;
+      continue;
+    }
+
+    allowed += 1;
+
+    if (!firstResponse) {
+      firstResponse = joinQueue({ userId, ip, path });
+    }
+  }
+
+  return {
+    totalSent: total,
+    acceptedRequests: allowed,
+    blockedRequests: blocked,
+    queue: firstResponse || getQueueStatus(userId)
+  };
+}
+
 module.exports = {
   inspectRequest,
   joinQueue,
   getQueueStatus,
   getAnomalies,
+  getUserTrafficDetails,
   getMonitoringSnapshot,
   getDashboardSnapshot,
   getClientSnapshot,
+  simulateBurstTraffic,
   startQueueProcessor
 };

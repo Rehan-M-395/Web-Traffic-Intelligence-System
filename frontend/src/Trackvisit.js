@@ -30,9 +30,17 @@ function getOS() {
   return "Unknown";
 }
 
-export function startHeartbeat() {
+function resolveApiUrl(baseUrl, path) {
+  if (!baseUrl) {
+    return path;
+  }
+
+  return `${baseUrl}${path}`;
+}
+
+export function startHeartbeat(baseUrl = "") {
   const interval = setInterval(() => {
-    fetch("/api/heartbeat", {
+    fetch(resolveApiUrl(baseUrl, "/api/heartbeat"), {
       method: "POST",
       credentials: "include"
     }).catch(() => {});
@@ -41,7 +49,7 @@ export function startHeartbeat() {
   return () => clearInterval(interval);
 }
 
-export default async function sendVisit() {
+export default async function sendVisit(baseUrl = "") {
   const gpu = await getGPU();
 
   const payload = {
@@ -55,7 +63,7 @@ export default async function sendVisit() {
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
   };
 
-  const response = await fetch("/api/visit", {
+  const response = await fetch(resolveApiUrl(baseUrl, "/api/visit"), {
     method: "POST",
     credentials: "include",
     headers: {

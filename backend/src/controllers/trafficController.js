@@ -1,10 +1,34 @@
 const visitService = require("../services/visitService");
 const trafficMonitorService = require("../services/trafficMonitorService");
+const {
+  logRequest,
+  safePersist,
+  upsertIpProfile
+} = require("../services/trafficPersistenceService");
 
 async function trackVisit(req, res, next) {
   try {
     const visitResult = await visitService.trackVisit(req, res);
     const snapshot = await trafficMonitorService.getClientSnapshot();
+    safePersist("track visit request log", () =>
+      logRequest({
+        userId: visitResult.uid,
+        sessionId: visitResult.sessionId,
+        ipAddress: req.ip,
+        routePath: req.path,
+        method: req.method,
+        requestType: "visit",
+        decision: "allowed",
+        statusCode: 200,
+        userAgent: req.get("user-agent") || null,
+        deviceName: req.body.browser || "unknown",
+        fingerprintHash: visitResult.fingerprintHash,
+        metadata: {
+          newUser: visitResult.newUser,
+          path: req.body.path || "/"
+        }
+      })
+    );
 
     res.json({
       success: true,
@@ -21,9 +45,38 @@ async function heartbeat(req, res, next) {
     const touched = await visitService.updateHeartbeat(req);
 
     if (!touched) {
+      safePersist("heartbeat no session log", () =>
+        logRequest({
+          userId: req.cookies.uid || null,
+          sessionId: null,
+          ipAddress: req.ip,
+          routePath: req.path,
+          method: req.method,
+          requestType: "heartbeat",
+          decision: "allowed",
+          statusCode: 204,
+          userAgent: req.get("user-agent") || null,
+          metadata: {
+            reason: "missing-session-cookie"
+          }
+        })
+      );
       return res.sendStatus(204);
     }
 
+    safePersist("heartbeat request log", () =>
+      logRequest({
+        userId: req.cookies.uid || null,
+        sessionId: req.cookies.sid || null,
+        ipAddress: req.ip,
+        routePath: req.path,
+        method: req.method,
+        requestType: "heartbeat",
+        decision: "allowed",
+        statusCode: 200,
+        userAgent: req.get("user-agent") || null
+      })
+    );
     res.sendStatus(200);
   } catch (error) {
     next(error);
@@ -46,6 +99,24 @@ async function joinQueue(req, res, next) {
       ip: req.ip,
       path: req.body.path || "/"
     });
+    safePersist("join queue request log", () =>
+      logRequest({
+        userId,
+        sessionId: req.cookies.sid || null,
+        ipAddress: req.ip,
+        routePath: req.path,
+        method: req.method,
+        requestType: "queue-join",
+        decision: "allowed",
+        statusCode: 200,
+        userAgent: req.get("user-agent") || null,
+        metadata: {
+          queueStatus: queueState.status,
+          queuePosition: queueState.queuePosition,
+          estimatedWaitTimeSeconds: queueState.estimatedWaitTimeSeconds
+        }
+      })
+    );
 
     res.json({
       success: true,
@@ -73,9 +144,58 @@ function getQueueStatus(req, res) {
   });
 }
 
+function simulateBurstTraffic(req, res) {
+  const total = Math.min(Math.max(Number(req.body.total) || 1000, 1), 5000);
+  const userId = req.body.userId || req.cookies.uid;
+
+  if (!userId) {
+    return res.status(400).json({
+      success: false,
+      message: "User not identified"
+    });
+  }
+
+  const outcome = trafficMonitorService.simulateBurstTraffic({
+    total,
+    userId,
+    ip: req.ip,
+    path: req.body.path || "/"
+  });
+  safePersist("burst summary request log", async () => {
+    await logRequest({
+      userId,
+      sessionId: req.cookies.sid || null,
+      ipAddress: req.ip,
+      routePath: req.path,
+      method: req.method,
+      requestType: "burst-simulation",
+      decision: "allowed",
+      statusCode: 200,
+      userAgent: req.get("user-agent") || null,
+      metadata: {
+        totalSent: outcome.totalSent,
+        acceptedRequests: outcome.acceptedRequests,
+        blockedRequests: outcome.blockedRequests
+      }
+    });
+    await upsertIpProfile({
+      ipAddress: req.ip,
+      userId,
+      requestDelta: Math.max(0, outcome.totalSent - 1),
+      blockedDelta: outcome.blockedRequests
+    });
+  });
+
+  return res.json({
+    success: true,
+    ...outcome
+  });
+}
+
 module.exports = {
   trackVisit,
   heartbeat,
   joinQueue,
-  getQueueStatus
+  getQueueStatus,
+  simulateBurstTraffic
 };

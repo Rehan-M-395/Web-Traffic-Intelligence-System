@@ -3,6 +3,10 @@
   "version": "1.0.0",
   "main": "server.js",
   "scripts": {
+    "db:migrate:traffic": "node scripts/applyTrafficSchema.js",
+    "db:migrate:user-tracking": "echo \"Run backend/db/user_tracking_schema.sql in your DB client\"",
+    "dev:unstable": "node src/demo/unstableServer.js",
+    "stress:unstable": "node scripts/stressUnstable.js",
     "dev": "nodemon server.js",
     "start": "node server.js"
   },

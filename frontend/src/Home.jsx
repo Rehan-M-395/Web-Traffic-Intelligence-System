@@ -1,34 +1,48 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
-import MetricCard from "./components/MetricCard";
-import StatusBadge from "./components/StatusBadge";
 import {
-  fetchDashboardData,
+  fetchUserTrackingDashboard,
   fetchQueueStatus,
-  joinQueue,
+  getBackendBaseUrl,
+  getBackendTarget,
+  sendSingleRequest,
+  setBackendTarget,
+  sendUserTracking,
   sendVisit,
+  simulateBurst,
   startHeartbeat
 } from "./services/api";
+import {
+  captureTrackingEvent,
+  getStoredConsent
+} from "./services/userTrackingClient";
 
 const POLL_INTERVAL_MS = 3000;
+const TRACKING_POLL_INTERVAL_MS = 4000;
 
-const initialLiveStats = {
-  activeUsers: 0,
-  queueLength: 0,
-  blockedRequests: 0,
-  avgWaitTimeSeconds: 0
-};
+function formatDate(value) {
+  if (!value) {
+    return "N/A";
+  }
+
+  return new Date(value).toLocaleString();
+}
 
 export default function Home() {
   const [userId, setUserId] = useState("");
-  const [liveStats, setLiveStats] = useState(initialLiveStats);
   const [queueState, setQueueState] = useState(null);
-  const [pageState, setPageState] = useState({
-    loading: true,
-    submitting: false,
-    error: "",
-    lastUpdated: ""
+  const [busyAction, setBusyAction] = useState("");
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [backendTarget, setBackendTargetState] = useState(getBackendTarget());
+  const [trackingConsent, setTrackingConsent] = useState(getStoredConsent());
+  const [trackingCurrent, setTrackingCurrent] = useState(null);
+  const [trackingRows, setTrackingRows] = useState([]);
+  const [trackingSummary, setTrackingSummary] = useState({
+    totalRecords: 0,
+    uniqueVisitors: 0,
+    suspiciousRecords: 0
   });
+  const [trackingError, setTrackingError] = useState("");
 
   useEffect(() => {
     let active = true;
@@ -42,27 +56,29 @@ export default function Home() {
         }
 
         setUserId(visit.uid);
-        await refreshData(visit.uid, active);
-      } catch (error) {
-        if (!active) {
-          return;
+        const queue = await fetchQueueStatus(visit.uid).catch(() => null);
+        if (active) {
+          setQueueState(queue);
         }
 
-        setPageState((current) => ({
-          ...current,
-          loading: false,
-          error: "We could not connect to the traffic service. Please try again."
-        }));
+        await captureTracking(undefined, visit.uid);
+        await refreshTrackingDashboard();
+      } catch {
+        if (active) {
+          setError("Unable to connect to the traffic server.");
+        }
       }
     }
 
+    setUserId("");
+    setQueueState(null);
     initialize();
 
     return () => {
       active = false;
       stopHeartbeat();
     };
-  }, []);
+  }, [backendTarget]);
 
   useEffect(() => {
     if (!userId) {
@@ -70,214 +86,261 @@ export default function Home() {
     }
 
     let active = true;
-    const interval = setInterval(() => {
-      refreshData(userId, active);
+    const interval = setInterval(async () => {
+      try {
+        const nextState = await fetchQueueStatus(userId).catch(() => null);
+        if (active) {
+          setQueueState(nextState);
+        }
+      } catch {
+        if (active) {
+          setError("Live queue updates are unavailable right now.");
+        }
+      }
     }, POLL_INTERVAL_MS);
 
     return () => {
       active = false;
       clearInterval(interval);
     };
-  }, [userId]);
+  }, [userId, backendTarget]);
 
-  async function refreshData(currentUserId, active) {
-    try {
-      const [dashboard, queue] = await Promise.all([
-        fetchDashboardData(),
-        currentUserId ? fetchQueueStatus(currentUserId).catch(() => null) : Promise.resolve(null)
-      ]);
+  useEffect(() => {
+    const interval = setInterval(() => {
+      refreshTrackingDashboard();
+    }, TRACKING_POLL_INTERVAL_MS);
 
-      if (!active) {
-        return;
-      }
+    return () => clearInterval(interval);
+  }, [backendTarget]);
 
-      setLiveStats({
-        activeUsers: dashboard.stats.activeUsers,
-        queueLength: dashboard.stats.queueLength,
-        blockedRequests: dashboard.stats.blockedRequests,
-        avgWaitTimeSeconds: dashboard.stats.avgWaitTimeSeconds
-      });
-      setQueueState(queue);
-      setPageState((current) => ({
-        ...current,
-        loading: false,
-        error: "",
-        lastUpdated: new Date().toLocaleTimeString()
-      }));
-    } catch (error) {
-      if (!active) {
-        return;
-      }
-
-      setPageState((current) => ({
-        ...current,
-        loading: false,
-        error: "Live traffic data is temporarily unavailable.",
-        lastUpdated: current.lastUpdated
-      }));
-    }
+  function handleBackendSwitch(target) {
+    setBackendTarget(target);
+    setBackendTargetState(getBackendTarget());
+    setError("");
+    setMessage("");
   }
 
-  async function handleJoinQueue() {
-    setPageState((current) => ({
-      ...current,
-      submitting: true,
-      error: ""
-    }));
+  async function handleSingleRequest() {
+    setBusyAction("single");
+    setError("");
+    setMessage("");
 
     try {
-      const response = await joinQueue(userId);
+      const response = await sendSingleRequest(userId);
       setQueueState(response);
-      setPageState((current) => ({
-        ...current,
-        submitting: false,
-        error: "",
-        lastUpdated: new Date().toLocaleTimeString()
-      }));
-    } catch (error) {
-      setPageState((current) => ({
-        ...current,
-        submitting: false,
-        error:
-          error.message === "Too many requests"
-            ? "Too many requests. Please wait a few seconds before trying again."
-            : "The server could not process your request right now."
-      }));
+      setMessage("Single request submitted successfully.");
+    } catch (requestError) {
+      setError(requestError.message || "Request failed.");
+    } finally {
+      setBusyAction("");
     }
   }
 
-  const queuePosition = queueState?.queuePosition ?? "-";
-  const waitTime = queueState?.estimatedWaitTimeSeconds ?? liveStats.avgWaitTimeSeconds;
-  const isBusy = pageState.submitting || queueState?.status === "queued" || queueState?.status === "processing";
-  const statusTone =
-    queueState?.status === "completed"
-      ? "success"
-      : queueState?.status === "processing"
-        ? "warning"
-        : queueState?.status === "queued"
-          ? "info"
-          : "neutral";
+  async function handleBurstRequest() {
+    setBusyAction("burst");
+    setError("");
+    setMessage("");
+
+    try {
+      const response = await simulateBurst(userId, 1000);
+      if (response.queue) {
+        setQueueState(response.queue);
+      }
+      setMessage(
+        `Burst complete: ${response.acceptedRequests} accepted, ${response.blockedRequests} blocked.`
+      );
+    } catch (requestError) {
+      setError(requestError.message || "Burst simulation failed.");
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  async function captureTracking(consentOverride, uidOverride) {
+    try {
+      const consentState = consentOverride || trackingConsent;
+      const response = await captureTrackingEvent(sendUserTracking, consentState, {
+        uid: uidOverride || userId || null
+      });
+      if (response?.event) {
+        setTrackingCurrent(response.event);
+      }
+      setTrackingConsent(getStoredConsent());
+      setTrackingError("");
+    } catch (trackingCaptureError) {
+      setTrackingError(trackingCaptureError.message || "Tracking capture failed.");
+    }
+  }
+
+  async function refreshTrackingDashboard() {
+    try {
+      const dashboard = await fetchUserTrackingDashboard(60);
+      setTrackingCurrent(dashboard.current);
+      setTrackingRows(dashboard.records || []);
+      setTrackingSummary(dashboard.summary || trackingSummary);
+      setTrackingError("");
+    } catch (dashboardError) {
+      setTrackingError(dashboardError.message || "Failed to load tracking dashboard.");
+    }
+  }
+
+  const queueLabel = queueState?.status || "idle";
+  const queuePosition = queueState?.queuePosition ?? 0;
+  const waitTime = queueState?.estimatedWaitTimeSeconds ?? 0;
 
   return (
-    <div className="page-shell client-shell">
-      <section className="hero-panel glass-panel">
-        <div className="hero-copy">
-          <span className="eyebrow">Scalable traffic control</span>
-          <h1>Keep request spikes orderly without leaving users guessing.</h1>
+    <main className="client-page">
+      <section className="client-card">
+        <p className="eyebrow">Client Traffic Simulator</p>
+        <h1>Send one request or launch a 1000-request burst.</h1>
+        <p className="subtle-copy">
+          This page is intentionally simple. Use it to test normal traffic versus burst traffic
+          from one client.
+        </p>
+
+        <div className="consent-banner">
+          <strong>Location consent</strong>
           <p>
-            This client page shows live activity, queue placement, and wait estimates so visitors
-            always know what is happening.
+            We first try browser GPS. If permission is denied or fails, tracking automatically
+            falls back to IP-based approximate location.
           </p>
+          <small className="consent-status">
+            Consent status: {trackingConsent === "granted" ? "Precise location enabled" : trackingConsent === "denied" ? "Permission denied earlier, using IP fallback" : "Pending decision"}
+          </small>
         </div>
-        <div className="hero-actions">
-          <StatusBadge
-            label={queueState?.status ? queueState.status : "idle"}
-            tone={statusTone}
-          />
-          <Link className="ghost-link" to="/dashboard">
-            Open admin dashboard
-          </Link>
-        </div>
-      </section>
 
-      <section className="card-grid">
-        <MetricCard
-          title="Active Users"
-          value={liveStats.activeUsers}
-          caption="Users with activity in the last 5 minutes"
-        />
-        <MetricCard
-          title="Your Queue Position"
-          value={queuePosition}
-          caption="Updated every few seconds while the queue is active"
-        />
-        <MetricCard
-          title="Estimated Wait Time"
-          value={`${waitTime || 0}s`}
-          caption="Based on current batch processing throughput"
-        />
-      </section>
-
-      <section className="client-panel-grid">
-        <div className="glass-panel request-panel">
-          <div className="panel-heading">
-            <div>
-              <p className="section-label">Request access</p>
-              <h2>Join the waiting room</h2>
-            </div>
-            <StatusBadge
-              label={pageState.loading ? "syncing" : "live"}
-              tone={pageState.loading ? "warning" : "success"}
-            />
-          </div>
-
-          <p className="muted-copy">
-            Requests are processed in small batches to keep the service responsive during spikes.
-          </p>
-
+        <div className="backend-switch">
           <button
-            className="primary-button"
-            disabled={isBusy || !userId}
-            onClick={handleJoinQueue}
+            className={`target-button ${backendTarget === "stable" ? "active" : ""}`}
+            disabled={Boolean(busyAction)}
+            onClick={() => handleBackendSwitch("stable")}
           >
-            {pageState.submitting
-              ? "Submitting request..."
-              : queueState?.status === "processing"
-                ? "Request processing..."
-                : queueState?.status === "queued"
-                  ? "Already in queue"
-                  : "Send request"}
+            Use Stable Backend (5000)
           </button>
+          <button
+            className={`target-button ${backendTarget === "unstable" ? "active" : ""}`}
+            disabled={Boolean(busyAction)}
+            onClick={() => handleBackendSwitch("unstable")}
+          >
+            Use Unstable Backend (5001)
+          </button>
+        </div>
 
-          {pageState.error ? <div className="feedback error">{pageState.error}</div> : null}
-          {queueState?.status === "completed" ? (
-            <div className="feedback success">
-              Your queued request completed successfully. You can submit another request if needed.
-            </div>
-          ) : null}
+        <p className="target-hint">
+          Current target: <code>{getBackendBaseUrl()}</code>
+        </p>
 
-          <div className="detail-row">
-            <span>Queue length</span>
-            <strong>{liveStats.queueLength}</strong>
+        <div className="status-grid">
+          <div className="status-tile">
+            <span>Status</span>
+            <strong>{queueLabel}</strong>
           </div>
-          <div className="detail-row">
-            <span>Blocked requests</span>
-            <strong>{liveStats.blockedRequests}</strong>
+          <div className="status-tile">
+            <span>Queue Position</span>
+            <strong>{queuePosition}</strong>
           </div>
-          <div className="detail-row">
-            <span>Last updated</span>
-            <strong>{pageState.lastUpdated || "Waiting for data"}</strong>
+          <div className="status-tile">
+            <span>Estimated Wait</span>
+            <strong>{waitTime}s</strong>
           </div>
         </div>
 
-        <div className="glass-panel status-panel">
-          <p className="section-label">Experience details</p>
-          <h2>What users see during heavy traffic</h2>
-          <div className="timeline-list">
-            <div className="timeline-item">
-              <span className="timeline-dot info" />
-              <div>
-                <strong>Queued</strong>
-                <p>Users receive an immediate queue position and estimated wait time.</p>
-              </div>
-            </div>
-            <div className="timeline-item">
-              <span className="timeline-dot warning" />
-              <div>
-                <strong>Protected</strong>
-                <p>Repeated rapid requests are rate limited before they can overload the server.</p>
-              </div>
-            </div>
-            <div className="timeline-item">
-              <span className="timeline-dot success" />
-              <div>
-                <strong>Resolved</strong>
-                <p>Completed requests are surfaced with a clear success state and fresh polling.</p>
-              </div>
-            </div>
+        <div className="action-grid">
+          <button
+            className="action-button"
+            disabled={!userId || Boolean(busyAction)}
+            onClick={handleSingleRequest}
+          >
+            {busyAction === "single" ? "Sending..." : "Send 1 Request"}
+          </button>
+          <button
+            className="action-button burst"
+            disabled={!userId || Boolean(busyAction)}
+            onClick={handleBurstRequest}
+          >
+            {busyAction === "burst" ? "Bursting..." : "Send 1000 Burst Requests"}
+          </button>
+        </div>
+
+        {message ? <div className="panel-message success">{message}</div> : null}
+        {error ? <div className="panel-message error">{error}</div> : null}
+        {trackingError ? <div className="panel-message error">{trackingError}</div> : null}
+
+        <div className="tracking-summary-grid">
+          <div className="status-tile">
+            <span>Total Tracking Records</span>
+            <strong>{trackingSummary.totalRecords}</strong>
           </div>
+          <div className="status-tile">
+            <span>Unique Visitors</span>
+            <strong>{trackingSummary.uniqueVisitors}</strong>
+          </div>
+          <div className="status-tile">
+            <span>Suspicious Records</span>
+            <strong>{trackingSummary.suspiciousRecords}</strong>
+          </div>
+        </div>
+
+        <div className="tracking-card">
+          <h2>Current User Tracking Card</h2>
+          {trackingCurrent ? (
+            <div className="tracking-grid">
+              <div><span>Visitor ID</span><strong>{trackingCurrent.visitorId}</strong></div>
+              <div><span>OS/Platform</span><strong>{trackingCurrent.device.osPlatform}</strong></div>
+              <div><span>Language</span><strong>{trackingCurrent.device.language}</strong></div>
+              <div><span>Screen</span><strong>{trackingCurrent.device.screenResolution}</strong></div>
+              <div><span>Timezone</span><strong>{trackingCurrent.device.timezone}</strong></div>
+              <div><span>Location</span><strong>{trackingCurrent.location.city || "Unknown"}, {trackingCurrent.location.country || "Unknown"}</strong></div>
+              <div><span>Location Type</span><strong>{trackingCurrent.location.locationType === "precise" ? "Precise Location" : "Approximate Location (via IP)"}</strong></div>
+              <div><span>Coordinates</span><strong>{trackingCurrent.location.latitude ?? "N/A"}, {trackingCurrent.location.longitude ?? "N/A"}</strong></div>
+              <div><span>IP</span><strong>{trackingCurrent.location.ipAddress}</strong></div>
+              <div><span>Timestamp</span><strong>{formatDate(trackingCurrent.timestamp)}</strong></div>
+            </div>
+          ) : (
+            <p className="helper-copy">Tracking card will appear after first capture.</p>
+          )}
+        </div>
+
+        <div className="tracking-table-wrap">
+          <h2>All Tracked Users</h2>
+          <table className="tracking-table">
+            <thead>
+              <tr>
+                <th>Visitor ID</th>
+                <th>City</th>
+                <th>Country</th>
+                <th>IP</th>
+                <th>Location Type</th>
+                <th>Coords</th>
+                <th>Device</th>
+                <th>Suspicious</th>
+                <th>Reasons</th>
+                <th>Timestamp</th>
+              </tr>
+            </thead>
+            <tbody>
+              {trackingRows.map((row) => (
+                <tr key={row.id}>
+                  <td><code>{row.visitorId}</code></td>
+                  <td>{row.location.city || "Unknown"}</td>
+                  <td>{row.location.country || "Unknown"}</td>
+                  <td><code>{row.location.ipAddress}</code></td>
+                  <td>{row.location.locationType === "precise" ? "Precise Location" : "Approximate Location (via IP)"}</td>
+                  <td>{row.location.latitude ?? "N/A"}, {row.location.longitude ?? "N/A"}</td>
+                  <td>{row.device.osPlatform}</td>
+                  <td>{row.suspicious ? "Yes" : "No"}</td>
+                  <td>{row.suspiciousReasons?.join(", ") || "-"}</td>
+                  <td>{formatDate(row.timestamp)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="helper-copy">
+          Admin dashboard runs separately on <code>http://localhost:5174</code>.
         </div>
       </section>
-    </div>
+    </main>
   );
 }
