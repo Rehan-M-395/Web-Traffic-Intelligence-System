@@ -42,8 +42,16 @@ export function getBackendBaseUrl() {
   return `http://${getBrowserHost()}:${port}`;
 }
 
+function getStableBackendBaseUrl() {
+  return `http://${getBrowserHost()}:${BACKEND_TARGETS.stable}`;
+}
+
 function buildApiUrl(path) {
   return `${getBackendBaseUrl()}${path}`;
+}
+
+function buildStableApiUrl(path) {
+  return `${getStableBackendBaseUrl()}${path}`;
 }
 
 async function parseJson(response) {
@@ -106,7 +114,7 @@ export async function fetchQueueStatus(userId) {
 }
 
 export async function sendUserTracking(payload) {
-  const response = await fetch(buildApiUrl("/api/user-tracking"), {
+  const response = await fetch(buildStableApiUrl("/api/user-tracking"), {
     method: "POST",
     credentials: "include",
     headers: {

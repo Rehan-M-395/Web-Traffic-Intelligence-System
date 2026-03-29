@@ -158,6 +158,7 @@ async function getIpBasedLocation() {
 
 async function captureTrackingEvent(sendFn, consentState, context = {}) {
   const fingerprint = await buildFingerprint();
+  const ipLocation = await getIpBasedLocation();
   let location = {
     locationType: "approximate"
   };
@@ -169,6 +170,9 @@ async function captureTrackingEvent(sendFn, consentState, context = {}) {
       const precise = await getPreciseLocation();
       location = {
         ...precise,
+        city: ipLocation?.city || null,
+        country: ipLocation?.country || null,
+        ipAddress: ipLocation?.ipAddress || null,
         locationType: "precise"
       };
       preciseLocationAllowed = true;
@@ -177,11 +181,9 @@ async function captureTrackingEvent(sendFn, consentState, context = {}) {
       if (consentState === "pending") {
         setStoredConsent("denied");
       }
-      const ipLocation = await getIpBasedLocation();
       location = ipLocation || { locationType: "approximate" };
     }
   } else {
-    const ipLocation = await getIpBasedLocation();
     location = ipLocation || { locationType: "approximate" };
   }
 

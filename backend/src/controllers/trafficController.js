@@ -10,25 +10,6 @@ async function trackVisit(req, res, next) {
   try {
     const visitResult = await visitService.trackVisit(req, res);
     const snapshot = await trafficMonitorService.getClientSnapshot();
-    safePersist("track visit request log", () =>
-      logRequest({
-        userId: visitResult.uid,
-        sessionId: visitResult.sessionId,
-        ipAddress: req.ip,
-        routePath: req.path,
-        method: req.method,
-        requestType: "visit",
-        decision: "allowed",
-        statusCode: 200,
-        userAgent: req.get("user-agent") || null,
-        deviceName: req.body.browser || "unknown",
-        fingerprintHash: visitResult.fingerprintHash,
-        metadata: {
-          newUser: visitResult.newUser,
-          path: req.body.path || "/"
-        }
-      })
-    );
 
     res.json({
       success: true,
@@ -45,38 +26,9 @@ async function heartbeat(req, res, next) {
     const touched = await visitService.updateHeartbeat(req);
 
     if (!touched) {
-      safePersist("heartbeat no session log", () =>
-        logRequest({
-          userId: req.cookies.uid || null,
-          sessionId: null,
-          ipAddress: req.ip,
-          routePath: req.path,
-          method: req.method,
-          requestType: "heartbeat",
-          decision: "allowed",
-          statusCode: 204,
-          userAgent: req.get("user-agent") || null,
-          metadata: {
-            reason: "missing-session-cookie"
-          }
-        })
-      );
       return res.sendStatus(204);
     }
 
-    safePersist("heartbeat request log", () =>
-      logRequest({
-        userId: req.cookies.uid || null,
-        sessionId: req.cookies.sid || null,
-        ipAddress: req.ip,
-        routePath: req.path,
-        method: req.method,
-        requestType: "heartbeat",
-        decision: "allowed",
-        statusCode: 200,
-        userAgent: req.get("user-agent") || null
-      })
-    );
     res.sendStatus(200);
   } catch (error) {
     next(error);

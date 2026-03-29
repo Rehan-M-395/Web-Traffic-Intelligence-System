@@ -208,6 +208,10 @@ th {
   z-index: 1;
 }
 
+.risky-row td {
+  background: rgba(239, 68, 68, 0.14);
+}
+
 .mono {
   font-family: "Consolas", "Courier New", monospace;
   font-size: 0.82rem;

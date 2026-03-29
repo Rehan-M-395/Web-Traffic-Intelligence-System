@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import {
-  fetchUserTrackingDashboard,
   fetchQueueStatus,
   getBackendBaseUrl,
   getBackendTarget,
@@ -17,7 +16,6 @@ import {
 } from "./services/userTrackingClient";
 
 const POLL_INTERVAL_MS = 3000;
-const TRACKING_POLL_INTERVAL_MS = 4000;
 
 function formatDate(value) {
   if (!value) {
@@ -36,12 +34,6 @@ export default function Home() {
   const [backendTarget, setBackendTargetState] = useState(getBackendTarget());
   const [trackingConsent, setTrackingConsent] = useState(getStoredConsent());
   const [trackingCurrent, setTrackingCurrent] = useState(null);
-  const [trackingRows, setTrackingRows] = useState([]);
-  const [trackingSummary, setTrackingSummary] = useState({
-    totalRecords: 0,
-    uniqueVisitors: 0,
-    suspiciousRecords: 0
-  });
   const [trackingError, setTrackingError] = useState("");
 
   useEffect(() => {
@@ -62,7 +54,6 @@ export default function Home() {
         }
 
         await captureTracking(undefined, visit.uid);
-        await refreshTrackingDashboard();
       } catch {
         if (active) {
           setError("Unable to connect to the traffic server.");
@@ -104,14 +95,6 @@ export default function Home() {
       clearInterval(interval);
     };
   }, [userId, backendTarget]);
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      refreshTrackingDashboard();
-    }, TRACKING_POLL_INTERVAL_MS);
-
-    return () => clearInterval(interval);
-  }, [backendTarget]);
 
   function handleBackendSwitch(target) {
     setBackendTarget(target);
@@ -169,18 +152,6 @@ export default function Home() {
       setTrackingError("");
     } catch (trackingCaptureError) {
       setTrackingError(trackingCaptureError.message || "Tracking capture failed.");
-    }
-  }
-
-  async function refreshTrackingDashboard() {
-    try {
-      const dashboard = await fetchUserTrackingDashboard(60);
-      setTrackingCurrent(dashboard.current);
-      setTrackingRows(dashboard.records || []);
-      setTrackingSummary(dashboard.summary || trackingSummary);
-      setTrackingError("");
-    } catch (dashboardError) {
-      setTrackingError(dashboardError.message || "Failed to load tracking dashboard.");
     }
   }
 
@@ -266,21 +237,6 @@ export default function Home() {
         {error ? <div className="panel-message error">{error}</div> : null}
         {trackingError ? <div className="panel-message error">{trackingError}</div> : null}
 
-        <div className="tracking-summary-grid">
-          <div className="status-tile">
-            <span>Total Tracking Records</span>
-            <strong>{trackingSummary.totalRecords}</strong>
-          </div>
-          <div className="status-tile">
-            <span>Unique Visitors</span>
-            <strong>{trackingSummary.uniqueVisitors}</strong>
-          </div>
-          <div className="status-tile">
-            <span>Suspicious Records</span>
-            <strong>{trackingSummary.suspiciousRecords}</strong>
-          </div>
-        </div>
-
         <div className="tracking-card">
           <h2>Current User Tracking Card</h2>
           {trackingCurrent ? (
@@ -299,42 +255,6 @@ export default function Home() {
           ) : (
             <p className="helper-copy">Tracking card will appear after first capture.</p>
           )}
-        </div>
-
-        <div className="tracking-table-wrap">
-          <h2>All Tracked Users</h2>
-          <table className="tracking-table">
-            <thead>
-              <tr>
-                <th>Visitor ID</th>
-                <th>City</th>
-                <th>Country</th>
-                <th>IP</th>
-                <th>Location Type</th>
-                <th>Coords</th>
-                <th>Device</th>
-                <th>Suspicious</th>
-                <th>Reasons</th>
-                <th>Timestamp</th>
-              </tr>
-            </thead>
-            <tbody>
-              {trackingRows.map((row) => (
-                <tr key={row.id}>
-                  <td><code>{row.visitorId}</code></td>
-                  <td>{row.location.city || "Unknown"}</td>
-                  <td>{row.location.country || "Unknown"}</td>
-                  <td><code>{row.location.ipAddress}</code></td>
-                  <td>{row.location.locationType === "precise" ? "Precise Location" : "Approximate Location (via IP)"}</td>
-                  <td>{row.location.latitude ?? "N/A"}, {row.location.longitude ?? "N/A"}</td>
-                  <td>{row.device.osPlatform}</td>
-                  <td>{row.suspicious ? "Yes" : "No"}</td>
-                  <td>{row.suspiciousReasons?.join(", ") || "-"}</td>
-                  <td>{formatDate(row.timestamp)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
         </div>
 
         <div className="helper-copy">
