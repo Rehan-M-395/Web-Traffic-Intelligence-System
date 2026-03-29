@@ -1,6 +1,10 @@
 const sql = require("../../neon_connection");
 const { scheduleIpEnrichment } = require("./geoEnrichmentService");
 
+const PERSISTENCE_DISABLED = process.env.DISABLE_DB_PERSISTENCE === "true";
+const ERROR_LOG_COOLDOWN_MS = Number(process.env.PERSISTENCE_ERROR_COOLDOWN_MS || 30000);
+let lastPersistenceErrorAt = 0;
+
 function normalizeNullableUuid(value) {
   if (!value || typeof value !== "string") {
     return null;
@@ -239,10 +243,21 @@ async function logAnomaly({
 }
 
 async function safePersist(taskName, operation) {
+  if (PERSISTENCE_DISABLED) {
+    return;
+  }
+
   try {
     await operation();
   } catch (error) {
-    console.error(`Persistence failed for ${taskName}`, error);
+    const now = Date.now();
+    if (now - lastPersistenceErrorAt >= ERROR_LOG_COOLDOWN_MS) {
+      lastPersistenceErrorAt = now;
+      console.error(
+        `Persistence failed for ${taskName}. DB unreachable; running in degraded mode.`,
+        error?.message || error
+      );
+    }
   }
 }
 

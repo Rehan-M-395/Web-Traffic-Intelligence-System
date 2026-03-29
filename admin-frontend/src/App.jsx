@@ -157,16 +157,16 @@ export default function App() {
     if (!query) return uniqueTrackingRows;
     return uniqueTrackingRows.filter((row) => {
       return (
-        toSafeLower(row.visitorId).includes(query) ||
-        toSafeLower(row.location?.ipAddress).includes(query) ||
-        toSafeLower(row.location?.city).includes(query) ||
-        toSafeLower(row.location?.country).includes(query) ||
-        toSafeLower(row.device?.osPlatform).includes(query) ||
-        toSafeLower(row.vpn?.detected).includes(query) ||
-        toSafeLower(row.vpn?.isProxy).includes(query) ||
-        toSafeLower(row.vpn?.confidence).includes(query) ||
-        toSafeLower(row.vpn?.type).includes(query) ||
-        toSafeLower(row.vpn?.isp).includes(query)
+        toSafeLower(row?.visitorId).includes(query) ||
+        toSafeLower(row?.ip_address).includes(query) ||
+        toSafeLower(row?.city).includes(query) ||
+        toSafeLower(row?.country).includes(query) ||
+        toSafeLower(row?.device?.osPlatform).includes(query) ||
+        toSafeLower(row?.vpn?.detected).includes(query) ||
+        toSafeLower(row?.vpn?.isProxy).includes(query) ||
+        toSafeLower(row?.vpn?.confidence).includes(query) ||
+        toSafeLower(row?.vpn?.type).includes(query) ||
+        toSafeLower(row?.vpn?.isp).includes(query)
       );
     });
   }, [uniqueTrackingRows, trackingQuery]);
@@ -398,21 +398,21 @@ export default function App() {
             <tbody>
               {filteredTrackingRows.map((row) => (
                 <tr key={row.id} className={isRiskyTrackingRow(row) ? "risky-row" : ""}>
-                  <td className="mono">{row.visitorId}</td>
-                  <td>{row.location.city || "Unknown"}</td>
-                  <td>{row.location.country || "Unknown"}</td>
-                  <td>{row.location.latitude ?? "N/A"}, {row.location.longitude ?? "N/A"}</td>
-                  <td className="mono">{row.location.ipAddress}</td>
-                  <td>{row.location.locationType === "precise" ? "Precise Location" : "Approximate Location (via IP)"}</td>
-                  <td>{row.vpn?.detected === true ? "Yes" : "No"}</td>
-                  <td>{row.vpn?.confidence ?? "N/A"}</td>
-                  <td>{row.vpn?.type || "N/A"}</td>
-                  <td>{row.vpn?.isp || "N/A"}</td>
-                  <td>{row.device.osPlatform}</td>
-                  <td>{row.suspicious ? "Yes" : "No"}</td>
-                  <td>{row.suspiciousReasons?.join(", ") || "-"}</td>
-                  <td>{formatTime(row.timestamp)}</td>
-                </tr>
+                <td className="mono">{row.visitor_id}</td>
+                <td>{row.city || "Unknown"}</td>
+                <td>{row.country || "Unknown"}</td>
+                <td>{row.latitude ?? "N/A"}, {row.longitude ?? "N/A"}</td>
+                <td className="mono">{row.ip_address || "N/A"}</td>
+                <td>{row.location_source === "precise" ? "Precise Location" : "Approximate Location (via IP)"}</td>
+                <td>{row.vpn_detected ? "Yes" : "No"}</td>
+                <td>{row.vpn_confidence ?? "N/A"}</td>
+                <td>{row.vpn_type || "N/A"}</td>
+                <td>{row.isp || "N/A"}</td>
+                <td>{row.os_platform || "Unknown"}</td>
+                <td>{row.suspicious ? "Yes" : "No"}</td>
+                <td>{row.suspicious_reasons?.join(", ") || "-"}</td>
+                <td>{formatTime(row.created_at)}</td>
+              </tr>
               ))}
             </tbody>
           </table>

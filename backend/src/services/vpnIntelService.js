@@ -45,6 +45,11 @@ function toBool(value) {
   return null;
 }
 
+function toNumber(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
 function getCacheTtlMs() {
   const configured = Number(process.env.VPN_CACHE_TTL_MS);
   if (Number.isFinite(configured) && configured > 0) return configured;
@@ -89,12 +94,21 @@ async function checkIpWhois(ip) {
   }
 
   const connection = payload.connection || {};
+  const latitude = toNumber(payload.latitude);
+  const longitude = toNumber(payload.longitude);
+  const hasCoords =
+    Number.isFinite(latitude) &&
+    Number.isFinite(longitude) &&
+    !(latitude === 0 && longitude === 0);
+
   return {
     ok: true,
     proxy: toBool(payload.proxy),
     city: typeof payload.city === "string" ? payload.city : null,
     country: typeof payload.country === "string" ? payload.country : null,
-    isp: typeof connection.isp === "string" ? connection.isp : null
+    isp: typeof connection.isp === "string" ? connection.isp : null,
+    latitude: hasCoords ? latitude : null,
+    longitude: hasCoords ? longitude : null
   };
 }
 
@@ -150,7 +164,7 @@ async function detectVpn(ipAddress) {
   const ipWho =
     ipWhoResult.status === "fulfilled"
       ? ipWhoResult.value
-      : { ok: false, proxy: null, city: null, country: null, isp: null };
+      : { ok: false, proxy: null, city: null, country: null, isp: null, latitude: null, longitude: null };
 
   const confidence = calculateConfidence({
     proxyCheckProxy: proxyCheck.proxy,
@@ -163,6 +177,10 @@ async function detectVpn(ipAddress) {
     isProxy: proxyCheck.proxy === true || ipWho.proxy === true,
     vpnType: proxyCheck.type || null,
     isp: ipWho.isp || null,
+    city: ipWho.city || null,
+    country: ipWho.country || null,
+    latitude: ipWho.latitude,
+    longitude: ipWho.longitude,
     confidence,
     sources: `${proxyCheck.ok ? "proxycheck" : "proxycheck-failed"}|${ipWho.ok ? "ipwho" : "ipwho-failed"}`
   };

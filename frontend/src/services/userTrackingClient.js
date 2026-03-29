@@ -42,11 +42,38 @@ function bufferToHex(buffer) {
     .join("");
 }
 
+function fallbackHash(value) {
+  // Deterministic non-crypto fallback for environments without SubtleCrypto.
+  let hash = 2166136261;
+  const input = String(value || "");
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index);
+    hash +=
+      (hash << 1) +
+      (hash << 4) +
+      (hash << 7) +
+      (hash << 8) +
+      (hash << 24);
+  }
+
+  const normalized = (hash >>> 0).toString(16).padStart(8, "0");
+  return normalized.repeat(8).slice(0, 64);
+}
+
 async function sha256(value) {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(value);
-  const hash = await crypto.subtle.digest("SHA-256", data);
-  return bufferToHex(hash);
+  const subtle = window?.crypto?.subtle;
+  if (!subtle || typeof subtle.digest !== "function") {
+    return fallbackHash(value);
+  }
+
+  try {
+    const encoder = new TextEncoder();
+    const data = encoder.encode(value);
+    const hash = await subtle.digest("SHA-256", data);
+    return bufferToHex(hash);
+  } catch {
+    return fallbackHash(value);
+  }
 }
 
 async function buildFingerprint() {
@@ -132,6 +159,11 @@ function getPreciseLocation() {
 }
 
 async function getIpBasedLocation() {
+  function parseCoordinate(value) {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : null;
+  }
+
   async function fetchJson(url) {
     const response = await fetch(url);
     if (!response.ok) {
@@ -186,9 +218,16 @@ async function getIpBasedLocation() {
         : null;
     }
 
+    const latitude = parseCoordinate(body.latitude);
+    const longitude = parseCoordinate(body.longitude);
+    const hasValidCoords =
+      Number.isFinite(latitude) &&
+      Number.isFinite(longitude) &&
+      !(latitude === 0 && longitude === 0);
+
     return {
-      latitude: Number.isFinite(Number(body.latitude)) ? Number(body.latitude) : null,
-      longitude: Number.isFinite(Number(body.longitude)) ? Number(body.longitude) : null,
+      latitude: hasValidCoords ? latitude : null,
+      longitude: hasValidCoords ? longitude : null,
       city: normalizeString(body.city),
       country: normalizeString(body.country),
       ipAddress: normalizeString(body.ip),
@@ -244,8 +283,8 @@ async function captureTrackingEvent(sendFn, consentState, context = {}) {
   if (!location.city && !location.country && location.latitude == null && location.longitude == null) {
     location = {
       ...location,
-      city: "Unknown",
-      country: "Unknown",
+      city: null,
+      country: null,
       locationType: "approximate"
     };
   }

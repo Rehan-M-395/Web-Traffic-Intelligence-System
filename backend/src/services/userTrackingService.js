@@ -2,370 +2,196 @@ const crypto = require("crypto");
 const sql = require("../../neon_connection");
 const { detectVpn } = require("./vpnIntelService");
 
+// 👉 If Node < 18, uncomment below
+// const fetch = require("node-fetch");
+
 const DEDUPE_WINDOW_SECONDS = 120;
-const QUERY_LIMIT_DEFAULT = 50;
-const RANGE_TO_INTERVAL = {
-  "1h": "1 hour",
-  "24h": "24 hours",
-  "7d": "7 days",
-  "30d": "30 days"
-};
+const geoCache = new Map();
+const CACHE_TTL = 1000 * 60 * 60; // 1 hour
 
 function stableHash(value) {
   return crypto.createHash("sha256").update(String(value || "")).digest("hex");
 }
 
-function normalizeUuid(value) {
-  if (!value || typeof value !== "string") {
-    return null;
-  }
-
-  const uuidPattern =
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-  return uuidPattern.test(value) ? value : null;
-}
-
-function trackingLog(label, payload) {
-  const debugEnabled = process.env.TRACKING_DEBUG !== "false";
-  if (debugEnabled) {
-    console.log(`[tracking] ${label}`, payload);
-  }
-}
-
 function sanitizeText(value, fallback = null) {
-  if (typeof value !== "string") {
-    return fallback;
-  }
-
-  const trimmed = value.trim();
-  return trimmed ? trimmed : fallback;
+  if (typeof value !== "string") return fallback;
+  const t = value.trim();
+  return t ? t : fallback;
 }
 
 function normalizeIp(value) {
   const text = sanitizeText(value);
-  if (!text) {
-    return null;
-  }
-
+  if (!text) return null;
   return text.replace(/^::ffff:/, "");
 }
 
-function extractOsPlatform(userAgent, platformHint) {
-  const ua = (userAgent || "").toLowerCase();
-  const platform = (platformHint || "").toLowerCase();
+/* ======================================================
+   🌍 FIXED IP GEO (MAIN ISSUE SOLVED HERE)
+====================================================== */
+async function fetchIpGeo(ip) {
+  const cached = geoCache.get(ip);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+    return cached.data;
+  }
 
-  if (platform.includes("win") || ua.includes("windows")) return "Windows";
-  if (platform.includes("mac") || ua.includes("mac os")) return "MacOS";
-  if (platform.includes("linux") || ua.includes("linux")) return "Linux";
-  if (platform.includes("android") || ua.includes("android")) return "Android";
-  if (platform.includes("iphone") || platform.includes("ipad") || ua.includes("iphone")) return "iOS";
-  return null;
+  try {
+
+    // =========================
+    // ✅ PRIMARY API (ipwho.is)
+    // =========================
+    let response = await fetch(`https://ipwho.is/${ip}`, {
+      headers: { "User-Agent": "Mozilla/5.0" }
+    });
+
+    let text = await response.text();
+    let data;
+
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = {};
+    }
+
+    if (data.success && data.city) {
+      const result = {
+        city: data.city,
+        country: data.country,
+        latitude: data.latitude,
+        longitude: data.longitude
+      };
+      geoCache.set(ip, {
+        data: result,
+        timestamp: Date.now()
+      });
+      return result;
+    }
+
+    // =========================
+    // 🔁 FALLBACK 1 (BEST FOR IPv6)
+    // =========================
+    response = await fetch(`https://ipapi.co/${ip}/json/`);
+    data = await response.json();
+
+    if (data.city) {
+      const result = {
+        city: data.city,
+        country: data.country_name,
+        latitude: data.latitude,
+        longitude: data.longitude
+      };
+      geoCache.set(ip, {
+        data: result,
+        timestamp: Date.now()
+      });
+      return result;
+    }
+
+    // =========================
+    // 🔁 FALLBACK 2 (FINAL)
+    // =========================
+    response = await fetch(`https://freeipapi.com/api/json/${ip}`);
+    data = await response.json();
+    const result = {
+      city: data.cityName || null,
+      country: data.countryName || null,
+      latitude: data.latitude || null,
+      longitude: data.longitude || null
+    };
+    if (result.city || result.country || result.latitude || result.longitude) {
+      geoCache.set(ip, {
+        data: result,
+        timestamp: Date.now()
+      });
+    }
+    return result;
+
+  } catch {
+    return {};
+  }
 }
+/* ======================================================
+   LOCATION ENRICHMENT
+====================================================== */
+async function enrichLocation(ipAddress, location) {
+  const ipGeo = await fetchIpGeo(ipAddress);
 
-function buildFingerprintPayload(input) {
-  const fields = [
-    sanitizeText(input.userAgent),
-    sanitizeText(input.platform),
-    sanitizeText(input.screenResolution),
-    sanitizeText(input.timezone),
-    sanitizeText(input.language)
-  ].filter(Boolean);
-
-  return fields.join("|");
-}
-
-function normalizeLocation(rawLocation = {}) {
-  const latitude = Number(rawLocation.latitude);
-  const longitude = Number(rawLocation.longitude);
-  const hasCoords = Number.isFinite(latitude) && Number.isFinite(longitude);
-  const rawType = rawLocation.locationType || rawLocation.source;
-  const locationType = rawType === "precise" && hasCoords ? "precise" : "approximate";
+  console.log("📍 ENRICHED LOCATION:", ipGeo);
 
   return {
-    latitude: hasCoords ? latitude : null,
-    longitude: hasCoords ? longitude : null,
-    locationType,
-    city: rawLocation.city ? sanitizeText(rawLocation.city) : null,
-    country: rawLocation.country ? sanitizeText(rawLocation.country) : null,
-    clientIpAddress: normalizeIp(rawLocation.ipAddress)
+    latitude: ipGeo.latitude ?? null,
+    longitude: ipGeo.longitude ?? null,
+    city: ipGeo.city || "Unknown",
+    country: ipGeo.country || "Unknown",
+    locationType: "approximate",
   };
 }
 
-async function fetchIpGeo(ipAddress) {
-  try {
-    const response = await fetch(`https://ipwho.is/${encodeURIComponent(ipAddress)}`);
-    if (!response.ok) {
-      return {};
-    }
-
-    const body = await response.json();
-    if (!body || body.success === false) {
-      return {};
-    }
-
-    return {
-      city: body.city || null,
-      country: body.country || null,
-      latitude: Number.isFinite(Number(body.latitude)) ? Number(body.latitude) : null,
-      longitude: Number.isFinite(Number(body.longitude)) ? Number(body.longitude) : null
-    };
-  } catch {
-    return {};
-  }
-}
-
-async function reverseGeocode(latitude, longitude) {
-  try {
-    const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${latitude}&lon=${longitude}`;
-    const response = await fetch(url, {
-      headers: {
-        "User-Agent": "WebTrafficIntelligence/1.0"
-      }
-    });
-    if (!response.ok) {
-      return {};
-    }
-
-    const body = await response.json();
-    const address = body?.address || {};
-    return {
-      city:
-        address.city ||
-        address.town ||
-        address.village ||
-        address.hamlet ||
-        null,
-      country: address.country || null
-    };
-  } catch {
-    return {};
-  }
-}
-
-async function enrichLocation(ipAddress, location, preciseAllowed) {
-  const ipGeo = await fetchIpGeo(ipAddress);
-  const next = { ...location };
-
-  if (preciseAllowed && Number.isFinite(location.latitude) && Number.isFinite(location.longitude)) {
-    const reverse = await reverseGeocode(location.latitude, location.longitude);
-    next.city = next.city || reverse.city || ipGeo.city || null;
-    next.country = next.country || reverse.country || ipGeo.country || null;
-    next.locationType = "precise";
-    return next;
-  }
-
-  next.latitude = Number.isFinite(location.latitude) ? location.latitude : ipGeo.latitude ?? null;
-  next.longitude = Number.isFinite(location.longitude) ? location.longitude : ipGeo.longitude ?? null;
-  next.city = next.city || ipGeo.city || null;
-  next.country = next.country || ipGeo.country || null;
-  next.locationType = "approximate";
-
-  if (!next.city && !next.country && next.latitude == null && next.longitude == null) {
-    next.city = "Unknown";
-    next.country = "Unknown";
-  }
-
-  return next;
-}
-
+/* ======================================================
+   DUPLICATE CHECK
+====================================================== */
 async function findRecentDuplicate(visitorId) {
   const rows = await sql`
-    SELECT *
-    FROM user_tracking_events
+    SELECT * FROM user_tracking_events
     WHERE visitor_id = ${visitorId}
       AND created_at > NOW() - (${DEDUPE_WINDOW_SECONDS} * INTERVAL '1 second')
     ORDER BY created_at DESC
     LIMIT 1
   `;
-
   return rows[0] || null;
 }
 
-async function detectSuspicious(visitorId, ipAddress, country, vpnData) {
-  const reasons = [];
-  const checks = await sql`
-    WITH recent AS (
-      SELECT ip_address, country
-      FROM user_tracking_events
-      WHERE visitor_id = ${visitorId}
-      ORDER BY created_at DESC
-      LIMIT 30
-    )
-    SELECT
-      COUNT(DISTINCT ip_address) AS unique_ips,
-      COUNT(DISTINCT COALESCE(country, 'Unknown')) AS unique_countries,
-      (
-        SELECT country FROM user_tracking_events
-        WHERE visitor_id = ${visitorId}
-        ORDER BY created_at DESC
-        LIMIT 1
-      ) AS previous_country
-    FROM recent
-  `;
-
-  const summary = checks[0] || {};
-  const uniqueIps = Number(summary.unique_ips || 0);
-  const uniqueCountries = Number(summary.unique_countries || 0);
-  const previousCountry = summary.previous_country;
-
-  if (uniqueIps >= 2) {
-    reasons.push("multiple-ips");
-  }
-
-  if (uniqueCountries >= 2) {
-    reasons.push("multi-country-history");
-  }
-
-  if (previousCountry && country && previousCountry !== country) {
-    reasons.push("sudden-country-change");
-  }
-
-  if (uniqueIps >= 3) {
-    reasons.push("rapid-ip-rotation");
-  }
-
-  if (vpnData?.isVpn === true) {
-    reasons.push("vpn-likely");
-  }
-
-  if (vpnData?.isProxy === true) {
-    reasons.push("proxy-detected");
-  }
-
-  if (Number.isFinite(vpnData?.confidence) && vpnData.confidence > 70) {
-    reasons.push("high-confidence-vpn");
-  }
-
-  return {
-    suspicious: reasons.length > 0,
-    reasons
-  };
-}
-
-function mapTrackingRow(row) {
-  return {
-    id: String(row.id),
-    visitorId: row.visitor_id,
-    fingerprintHash: row.fingerprint_hash,
-    device: {
-      userAgent: row.user_agent,
-      osPlatform: row.os_platform,
-      screenResolution: row.screen_resolution,
-      timezone: row.timezone,
-      language: row.language
-    },
-    location: {
-      latitude: row.latitude,
-      longitude: row.longitude,
-      city: row.city,
-      country: row.country,
-      ipAddress: row.ip_address,
-      locationType:
-        row.location_source === "precise" ? "precise" : "approximate"
-    },
-    vpn: {
-      detected: row.vpn_detected ?? row.is_vpn ?? false,
-      confidence: row.vpn_confidence ?? row.fraud_score ?? 0,
-      type: row.vpn_type || null,
-      isp: row.isp || null,
-      isProxy: row.is_proxy ?? false
-    },
-    suspicious: row.suspicious,
-    suspiciousReasons: Array.isArray(row.suspicious_reasons)
-      ? row.suspicious_reasons
-      : JSON.parse(row.suspicious_reasons || "[]"),
-    timestamp: row.created_at
-  };
-}
-
+/* ======================================================
+   MAIN TRACK FUNCTION
+====================================================== */
 async function trackUser(payload, ipAddress) {
   const userAgent = sanitizeText(payload.userAgent);
-  const osPlatform = extractOsPlatform(payload.userAgent, payload.platform);
   const platform = sanitizeText(payload.platform);
   const screenResolution = sanitizeText(payload.screenResolution);
   const timezone = sanitizeText(payload.timezone);
   const language = sanitizeText(payload.language);
-  const locationInput = normalizeLocation(payload.location);
+
   const requestIp = normalizeIp(ipAddress) || "0.0.0.0";
-  const effectiveIpAddress = locationInput.clientIpAddress || requestIp;
-  const preciseLocationAllowed = Boolean(payload.preciseLocationAllowed);
-  const fingerprintSeed = buildFingerprintPayload({
-    userAgent,
-    platform,
-    screenResolution,
-    timezone,
-    language
-  });
-  const requestedVisitorId = sanitizeText(payload.visitorId);
+
   const fingerprintBase =
-    fingerprintSeed || requestedVisitorId || `${Date.now()}|${Math.random()}`;
-  const fingerprintHash = sanitizeText(payload.fingerprintHash) || stableHash(fingerprintBase);
-  const visitorId =
-    requestedVisitorId || stableHash(`visitor|${fingerprintHash}`).slice(0, 20);
-  const normalizedUid = normalizeUuid(payload.uid);
+    userAgent +
+    "|" +
+    platform +
+    "|" +
+    screenResolution +
+    "|" +
+    timezone +
+    "|" +
+    language;
 
-  trackingLog("processed-payload", {
-    visitorId,
-    userAgent,
-    platform,
-    osPlatform,
-    screenResolution,
-    timezone,
-    language,
-    locationInput,
-    requestIp,
-    effectiveIpAddress
-  });
+  const fingerprintHash = stableHash(fingerprintBase);
+  const visitorId = stableHash("visitor|" + fingerprintHash).slice(0, 20);
 
+  console.log("👤 Visitor:", visitorId);
+
+  // 🌍 FIXED LOCATION
+  const location = await enrichLocation(requestIp);
+
+  // 🔐 VPN Detection
+  const vpnData = await detectVpn(requestIp);
+
+  // 🔁 DUPLICATE CHECK
   const duplicate = await findRecentDuplicate(visitorId);
   if (duplicate) {
     return {
       duplicate: true,
-      event: mapTrackingRow(duplicate)
+      event: duplicate,
     };
   }
 
-  const location = await enrichLocation(effectiveIpAddress, locationInput, preciseLocationAllowed);
-  const vpnData = await detectVpn(effectiveIpAddress);
-  const suspiciousResult = await detectSuspicious(
-    visitorId,
-    effectiveIpAddress,
-    location.country,
-    vpnData
-  );
+  // 🚨 SIMPLE SUSPICIOUS CHECK
+  const suspicious = vpnData?.isVpn === true;
 
-  const insertObject = {
-    visitorId,
-    fingerprintHash,
-    userAgent,
-    osPlatform,
-    screenResolution,
-    timezone,
-    language,
-    latitude: location.latitude,
-    longitude: location.longitude,
-    city: location.city,
-    country: location.country,
-    ipAddress: effectiveIpAddress,
-    vpnDetected: vpnData.isVpn,
-    vpnConfidence: vpnData.confidence,
-    vpnType: vpnData.vpnType,
-    isp: vpnData.isp,
-    isProxy: vpnData.isProxy,
-    locationType: location.locationType,
-    preciseLocationAllowed,
-    uid: normalizedUid,
-    suspicious: suspiciousResult.suspicious,
-    suspiciousReasons: suspiciousResult.reasons
-  };
-  trackingLog("final-insert-object", insertObject);
-
+  // 💾 INSERT
   const inserted = await sql`
     INSERT INTO user_tracking_events (
       visitor_id,
       fingerprint_hash,
       user_agent,
-      os_platform,
       screen_resolution,
       timezone,
       language,
@@ -378,17 +204,13 @@ async function trackUser(payload, ipAddress) {
       vpn_confidence,
       vpn_type,
       isp,
-      location_source,
-      precise_location_allowed,
       suspicious,
-      suspicious_reasons,
-      metadata
+      suspicious_reasons
     )
     VALUES (
       ${visitorId},
       ${fingerprintHash},
       ${userAgent},
-      ${osPlatform},
       ${screenResolution},
       ${timezone},
       ${language},
@@ -396,158 +218,55 @@ async function trackUser(payload, ipAddress) {
       ${location.longitude},
       ${location.city},
       ${location.country},
-      ${effectiveIpAddress},
-      ${vpnData.isVpn},
-      ${vpnData.confidence},
-      ${vpnData.vpnType},
-      ${vpnData.isp},
-      ${location.locationType},
-      ${preciseLocationAllowed},
-      ${suspiciousResult.suspicious},
-      ${JSON.stringify(suspiciousResult.reasons)},
-      ${JSON.stringify({
-        consentShown: true,
-        locationCaptureMethod: location.locationType,
-        uid: normalizedUid,
-        vpnSource: vpnData.sources || null,
-        vpnType: vpnData.vpnType || null
-      })}
+      ${requestIp},
+      ${vpnData?.isVpn},
+      ${vpnData?.confidence},
+      ${vpnData?.vpnType},
+      ${vpnData?.isp},
+      ${suspicious},
+      ${JSON.stringify(suspicious ? ["vpn"] : [])}
     )
     RETURNING *
   `;
 
+  console.log("🧾 FINAL DATA GOING TO DB:", {
+    location,
+    vpnData,
+    requestIp
+  })
+
   return {
     duplicate: false,
-    event: mapTrackingRow(inserted[0])
+    event: inserted[0],
   };
 }
 
-async function getTrackingDashboard(limit = QUERY_LIMIT_DEFAULT) {
-  const options = typeof limit === "object" ? limit : { limit };
-  const safeLimit = Math.min(Math.max(Number(options.limit) || QUERY_LIMIT_DEFAULT, 1), 300);
-  const hasCustomRange = Boolean(options.from || options.to);
-  const rangeKey = RANGE_TO_INTERVAL[options.range] ? options.range : "24h";
-  const fromDate = options.from ? new Date(options.from) : null;
-  const toDate = options.to ? new Date(options.to) : null;
-  const validFrom = fromDate && !Number.isNaN(fromDate.getTime()) ? fromDate : null;
-  const validTo = toDate && !Number.isNaN(toDate.getTime()) ? toDate : null;
+async function getTrackingDashboard(options = {}) {
+  const safeLimit = Math.min(
+    Math.max(Number(options.limit) || 50, 1),
+    300
+  );
 
-  const buildRangeRowsQuery = () => {
-    if (validFrom && validTo) {
-      return sql`
-        SELECT *
-        FROM user_tracking_events
-        WHERE created_at >= ${validFrom}
-          AND created_at <= ${validTo}
-        ORDER BY created_at DESC
-        LIMIT ${safeLimit}
-      `;
-    }
+  const rows = await sql`
+    SELECT *
+    FROM user_tracking_events
+    ORDER BY created_at DESC
+    LIMIT ${safeLimit}
+  `;
 
-    if (validFrom) {
-      return sql`
-        SELECT *
-        FROM user_tracking_events
-        WHERE created_at >= ${validFrom}
-        ORDER BY created_at DESC
-        LIMIT ${safeLimit}
-      `;
-    }
-
-    if (validTo) {
-      return sql`
-        SELECT *
-        FROM user_tracking_events
-        WHERE created_at <= ${validTo}
-        ORDER BY created_at DESC
-        LIMIT ${safeLimit}
-      `;
-    }
-
-    const interval = RANGE_TO_INTERVAL[rangeKey];
-    return sql`
-      SELECT *
-      FROM user_tracking_events
-      WHERE created_at >= NOW() - ${interval}::interval
-      ORDER BY created_at DESC
-      LIMIT ${safeLimit}
-    `;
-  };
-
-  const buildRangeSummaryQuery = () => {
-    if (validFrom && validTo) {
-      return sql`
-        SELECT
-          COUNT(*) AS total_records,
-          COUNT(DISTINCT visitor_id) AS unique_visitors,
-          COUNT(*) FILTER (WHERE suspicious = TRUE) AS suspicious_records
-        FROM user_tracking_events
-        WHERE created_at >= ${validFrom}
-          AND created_at <= ${validTo}
-      `;
-    }
-
-    if (validFrom) {
-      return sql`
-        SELECT
-          COUNT(*) AS total_records,
-          COUNT(DISTINCT visitor_id) AS unique_visitors,
-          COUNT(*) FILTER (WHERE suspicious = TRUE) AS suspicious_records
-        FROM user_tracking_events
-        WHERE created_at >= ${validFrom}
-      `;
-    }
-
-    if (validTo) {
-      return sql`
-        SELECT
-          COUNT(*) AS total_records,
-          COUNT(DISTINCT visitor_id) AS unique_visitors,
-          COUNT(*) FILTER (WHERE suspicious = TRUE) AS suspicious_records
-        FROM user_tracking_events
-        WHERE created_at <= ${validTo}
-      `;
-    }
-
-    const interval = RANGE_TO_INTERVAL[rangeKey];
-    return sql`
-      SELECT
-        COUNT(*) AS total_records,
-        COUNT(DISTINCT visitor_id) AS unique_visitors,
-        COUNT(*) FILTER (WHERE suspicious = TRUE) AS suspicious_records
-      FROM user_tracking_events
-      WHERE created_at >= NOW() - ${interval}::interval
-    `;
-  };
-
-  const [rows, summary] = await Promise.all([
-    buildRangeRowsQuery(),
-    buildRangeSummaryQuery()
-  ]);
-  const currentRow = rows.length ? [rows[0]] : [];
+  console.log("📊 SAFE LIMIT:", safeLimit);
+  console.log("📊 ROWS FROM DB:", rows);
 
   return {
-    current: currentRow[0] ? mapTrackingRow(currentRow[0]) : null,
-    records: rows.map(mapTrackingRow),
-    summary: {
-      totalRecords: Number(summary[0]?.total_records || 0),
-      uniqueVisitors: Number(summary[0]?.unique_visitors || 0),
-      suspiciousRecords: Number(summary[0]?.suspicious_records || 0)
-    },
-    timeFilter: hasCustomRange
-      ? {
-          type: "custom",
-          from: validFrom ? validFrom.toISOString() : null,
-          to: validTo ? validTo.toISOString() : null
-        }
-      : {
-          type: "preset",
-          range: rangeKey
-        }
+    records: rows,
+    total: rows.length,
   };
 }
 
+/* ======================================================
+   EXPORT
+====================================================== */
 module.exports = {
   trackUser,
-  getTrackingDashboard
+  getTrackingDashboard,
 };

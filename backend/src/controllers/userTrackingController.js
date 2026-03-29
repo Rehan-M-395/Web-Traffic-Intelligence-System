@@ -17,7 +17,8 @@ function getClientIp(req) {
 function trackingLog(label, payload) {
   const debugEnabled = process.env.TRACKING_DEBUG !== "false";
   if (debugEnabled) {
-    console.log(`[tracking] ${label}`, payload);
+    console.log(`\n🔍 [TRACKING] ${label}`);
+    console.log(JSON.stringify(payload, null, 2));
   }
 }
 
@@ -38,28 +39,28 @@ function validatePayload(payload) {
   };
 }
 
+/* ======================================================
+   📌 TRACK USER
+====================================================== */
 async function captureUserTracking(req, res, next) {
   try {
     const payload = req.body || {};
-    const ipAddress = getClientIp(req);
 
-    trackingLog("incoming-payload", {
-      visitorId: payload.visitorId,
-      userAgent: payload.userAgent,
-      platform: payload.platform,
-      screenResolution: payload.screenResolution,
-      timezone: payload.timezone,
-      language: payload.language,
-      location: payload.location,
+    // 🔥 PRIORITY: use frontend IP if available
+    const ipAddress =
+      payload?.location?.ipAddress ||
+      getClientIp(req);
+
+      console.log("🌐 FINAL IP USED:", ipAddress);
+
+    trackingLog("INCOMING PAYLOAD", {
+      payload,
       ipAddress
     });
 
     const validation = validatePayload(payload);
     if (!validation.valid) {
-      trackingLog("incomplete-payload", {
-        issues: validation.issues,
-        payload
-      });
+      trackingLog("VALIDATION ISSUES", validation.issues);
     }
 
     if (!payload.visitorId && !payload.userAgent) {
@@ -71,33 +72,43 @@ async function captureUserTracking(req, res, next) {
 
     const result = await userTrackingService.trackUser(payload, ipAddress);
 
+    trackingLog("SERVICE RESULT (TRACK USER)", result);
+
     return res.json({
       success: true,
       duplicate: result.duplicate,
       event: result.event
     });
   } catch (error) {
+    console.error("❌ TRACK USER ERROR:", error);
     return next(error);
   }
 }
 
+/* ======================================================
+   📊 DASHBOARD
+====================================================== */
 async function getUserTrackingDashboard(req, res, next) {
   try {
-    const limit = Number(req.query.limit) || 50;
-    const range = req.query.range || "24h";
-    const from = req.query.from || null;
-    const to = req.query.to || null;
-    const data = await userTrackingService.getTrackingDashboard({
-      limit,
-      range,
-      from,
-      to
-    });
+    const options = {
+      limit: Number(req.query.limit),
+      range: req.query.range,
+      from: req.query.from,
+      to: req.query.to
+    };
+
+    trackingLog("DASHBOARD QUERY PARAMS", options);
+
+    const data = await userTrackingService.getTrackingDashboard(options);
+
+    trackingLog("DASHBOARD DATA FROM SERVICE", data);
+
     return res.json({
       success: true,
       ...data
     });
   } catch (error) {
+    console.error("❌ DASHBOARD ERROR:", error);
     return next(error);
   }
 }
