@@ -241,16 +241,24 @@ export default function Home() {
           <h2>Current User Tracking Card</h2>
           {trackingCurrent ? (
             <div className="tracking-grid">
-              <div><span>Visitor ID</span><strong>{trackingCurrent.visitorId}</strong></div>
-              <div><span>OS/Platform</span><strong>{trackingCurrent.device.osPlatform}</strong></div>
-              <div><span>Language</span><strong>{trackingCurrent.device.language}</strong></div>
-              <div><span>Screen</span><strong>{trackingCurrent.device.screenResolution}</strong></div>
-              <div><span>Timezone</span><strong>{trackingCurrent.device.timezone}</strong></div>
-              <div><span>Location</span><strong>{trackingCurrent.location.city || "Unknown"}, {trackingCurrent.location.country || "Unknown"}</strong></div>
-              <div><span>Location Type</span><strong>{trackingCurrent.location.locationType === "precise" ? "Precise Location" : "Approximate Location (via IP)"}</strong></div>
-              <div><span>Coordinates</span><strong>{trackingCurrent.location.latitude ?? "N/A"}, {trackingCurrent.location.longitude ?? "N/A"}</strong></div>
-              <div><span>IP</span><strong>{trackingCurrent.location.ipAddress}</strong></div>
-              <div><span>Timestamp</span><strong>{formatDate(trackingCurrent.timestamp)}</strong></div>
+              {(() => {
+                const device = trackingCurrent.device || {};
+                const location = trackingCurrent.location || {};
+                return (
+                  <>
+                    <div><span>Visitor ID</span><strong>{trackingCurrent.visitorId}</strong></div>
+                    <div><span>OS/Platform</span><strong>{device.osPlatform || "Unknown"}</strong></div>
+                    <div><span>Language</span><strong>{device.language || "Unknown"}</strong></div>
+                    <div><span>Screen</span><strong>{device.screenResolution || "Unknown"}</strong></div>
+                    <div><span>Timezone</span><strong>{device.timezone || "Unknown"}</strong></div>
+                    <div><span>Location</span><strong>{location.city || "Unknown"}, {location.country || "Unknown"}</strong></div>
+                    <div><span>Location Type</span><strong>{location.locationType === "precise" ? "Precise Location" : "Approximate Location (via IP)"}</strong></div>
+                    <div><span>Coordinates</span><strong>{location.latitude ?? "N/A"}, {location.longitude ?? "N/A"}</strong></div>
+                    <div><span>IP</span><strong>{location.ipAddress || "N/A"}</strong></div>
+                    <div><span>Timestamp</span><strong>{formatDate(trackingCurrent.timestamp)}</strong></div>
+                  </>
+                );
+              })()}
             </div>
           ) : (
             <p className="helper-copy">Tracking card will appear after first capture.</p>

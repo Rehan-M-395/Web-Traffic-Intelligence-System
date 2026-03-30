@@ -179,6 +179,18 @@ export default function App() {
     );
   }
 
+  const stats = dashboard?.stats || {
+    totalRequests: 0,
+    activeUsers: 0,
+    blockedRequests: 0,
+    queueLength: 0,
+    anomaliesDetected: 0,
+    completedRequests: 0
+  };
+  const anomalies = Array.isArray(dashboard?.anomalies) ? dashboard.anomalies : [];
+  const topSuspiciousIps = Array.isArray(dashboard?.topSuspiciousIps) ? dashboard.topSuspiciousIps : [];
+  const trafficByCountry = Array.isArray(dashboard?.trafficByCountry) ? dashboard.trafficByCountry : [];
+
   return (
     <main className="admin-page">
       <section className="hero panel">
@@ -198,12 +210,12 @@ export default function App() {
       {error ? <section className="panel error-banner">{error}</section> : null}
 
       <section className="stats-grid">
-        <article className="panel stat-card"><span>Total Requests</span><strong>{dashboard.stats.totalRequests}</strong></article>
-        <article className="panel stat-card"><span>Active Users</span><strong>{dashboard.stats.activeUsers}</strong></article>
-        <article className="panel stat-card"><span>Blocked Requests</span><strong>{dashboard.stats.blockedRequests}</strong></article>
-        <article className="panel stat-card"><span>Queue Length</span><strong>{dashboard.stats.queueLength}</strong></article>
-        <article className="panel stat-card"><span>Anomalies</span><strong>{dashboard.stats.anomaliesDetected}</strong></article>
-        <article className="panel stat-card"><span>Completed</span><strong>{dashboard.stats.completedRequests}</strong></article>
+        <article className="panel stat-card"><span>Total Requests</span><strong>{stats.totalRequests}</strong></article>
+        <article className="panel stat-card"><span>Active Users</span><strong>{stats.activeUsers}</strong></article>
+        <article className="panel stat-card"><span>Blocked Requests</span><strong>{stats.blockedRequests}</strong></article>
+        <article className="panel stat-card"><span>Queue Length</span><strong>{stats.queueLength}</strong></article>
+        <article className="panel stat-card"><span>Anomalies</span><strong>{stats.anomaliesDetected}</strong></article>
+        <article className="panel stat-card"><span>Completed</span><strong>{stats.completedRequests}</strong></article>
       </section>
 
       <section className="content-grid">
@@ -212,7 +224,7 @@ export default function App() {
             <h2>Recent Anomalies</h2>
           </div>
           <div className="feed-list">
-            {dashboard.anomalies.length ? dashboard.anomalies.map((item) => (
+            {anomalies.length ? anomalies.map((item) => (
               <article className="feed-item" key={item.id}>
                 <strong>{item.type}</strong>
                 <span>{item.details.ip || "unknown source"}</span>
@@ -227,7 +239,7 @@ export default function App() {
             <h2>Top Suspicious IPs</h2>
           </div>
           <div className="feed-list">
-            {dashboard.topSuspiciousIps?.length ? dashboard.topSuspiciousIps.map((ipRow) => (
+            {topSuspiciousIps.length ? topSuspiciousIps.map((ipRow) => (
               <article className="feed-item" key={ipRow.ip}>
                 <strong className="mono">{ipRow.ip}</strong>
                 <span>Risk {ipRow.riskScore} | Requests {ipRow.totalRequests} | Blocked {ipRow.blockedRequests}</span>
@@ -289,7 +301,7 @@ export default function App() {
                 <tr><th>Country</th><th>Total Requests</th><th>Blocked</th></tr>
               </thead>
               <tbody>
-                {(dashboard.trafficByCountry || []).map((country) => (
+                {trafficByCountry.map((country) => (
                   <tr key={country.countryCode}>
                     <td>{country.countryCode} - {country.countryName}</td>
                     <td>{country.totalRequests}</td>
